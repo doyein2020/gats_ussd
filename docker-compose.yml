@@ -1,0 +1,137 @@
+version: '3.8'
+
+services:
+  # Base de données PostgreSQL
+  postgres:
+    image: postgres:14-alpine
+    container_name: ussd-postgres
+    restart: always
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    ports:
+      - "5432:5432"
+    networks:
+      - ussd-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API FastAPI
+  api:
+    build:
+      context: .
+      dockerfile: ./docker/api/Dockerfile
+    container_name: ussd-api
+    restart: always
+    volumes:
+      - ./api:/app
+    environment:
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - API_KEY=${API_KEY}
+      - ALLOWED_IPS=${ALLOWED_IPS}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ussd-network
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Interface d'administration (optionnelle)
+  admin:
+    build:
+      context: .
+      dockerfile: ./docker/admin/Dockerfile
+    container_name: ussd-admin
+    restart: always
+    volumes:
+      - ./admin:/app
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks:
+      - ussd-network
+
+  # Nginx pour le reverse proxy et HTTPS
+  nginx:
+    image: nginx:alpine
+    container_name: ussd-nginx
+    restart: always
+    volumes:
+      - ./docker/nginx/conf:/etc/nginx/conf.d
+      - ./docker/nginx/certbot/conf:/etc/letsencrypt
+      - ./docker/nginx/certbot/www:/var/www/certbot
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
+      - admin
+    networks:
+      - ussd-network
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+
+  # Certbot pour les certificats Let's Encrypt
+  certbot:
+    image: certbot/certbot
+    container_name: ussd-certbot
+    restart: always
+    volumes:
+      - ./docker/nginx/certbot/conf:/etc/letsencrypt
+      - ./docker/nginx/certbot/www:/var/www/certbot
+    depends_on:
+      - nginx
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+  # Prometheus pour le monitoring (optionnel)
+  prometheus:
+    image: prom/prometheus
+    container_name: ussd-prometheus
+    restart: always
+    volumes:
+      - ./docker/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - ussd-network
+
+  # Grafana pour les tableaux de bord (optionnel)
+  grafana:
+    image: grafana/grafana
+    container_name: ussd-grafana
+    restart: always
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - ussd-network
+
+networks:
+  ussd-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
