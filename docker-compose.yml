@@ -72,8 +72,8 @@ services:
     restart: always
     volumes:
       - ./docker/nginx/conf:/etc/nginx/conf.d
-      - ./docker/nginx/certbot/conf:/etc/letsencrypt
-      - ./docker/nginx/certbot/www:/var/www/certbot
+      - ./docker/nginx/ssl:/etc/nginx/ssl
+      - ./docker/nginx/generate-cert.sh:/generate-cert.sh
     ports:
       - "80:80"
       - "443:443"
@@ -82,19 +82,12 @@ services:
       - admin
     networks:
       - ussd-network
-    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
-
-  # Certbot pour les certificats Let's Encrypt
-  certbot:
-    image: certbot/certbot
-    container_name: ussd-certbot
-    restart: always
-    volumes:
-      - ./docker/nginx/certbot/conf:/etc/letsencrypt
-      - ./docker/nginx/certbot/www:/var/www/certbot
-    depends_on:
-      - nginx
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    command: >
+      /bin/sh -c "
+        chmod +x /generate-cert.sh && 
+        /generate-cert.sh && 
+        nginx -g 'daemon off;'
+      "
 
   # Prometheus pour le monitoring (optionnel)
   prometheus:
